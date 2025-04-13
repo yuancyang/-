@@ -3,86 +3,236 @@ import matplotlib.pyplot as plt
 from scipy import sparse
 from scipy import stats
 import time
+import argparse  # 导入参数解析模块
 from dataIn import dataIn
 from formACY_ThreePhase import formACY_ThreePhase
 from NR_main2_ThreePhase import NR_main2_ThreePhase
 from scipy.stats import gaussian_kde
 
-def analyze_monte_carlo_results(Vfenbu_s, n_nodes=None):
+def analyze_monte_carlo_results(Vfenbu_s, target_node=10, target_Phase=2, threshold=1.05, n_nodes=None):
     """
     蒙特卡洛法概率潮流结果分析
     
     参数:
         Vfenbu_s: 存储所有节点电压分布的数组
+        target_node: 选择分析的节点，默认为10
+        target_Phase: 选择分析的相位，默认为2
+        threshold: 电压阈值，默认为1.05 pu
         n_nodes: 系统节点数量(可选)
     """
-    # 节点电压概率密度分析
-    nbins = 100                        # 直方图区间数
-    target_node = 10                   # 选择分析的节点
-    target_Phase = 2                   # 选择分析的相位
-    target = 4*(target_node-1)+target_Phase - 1  # Python索引从0开始
-    
-    # 确保目标索引有效
+    # 计算目标节点索引并验证有效性
+    target = 4*(target_node-1)+target_Phase - 1
     if n_nodes and (target < 0 or target >= n_nodes):
         print(f"警告: 目标索引 {target} 超出范围，使用默认索引0")
         target = 0
     
-    # 提取目标节点电压数据
-    V_target = Vfenbu_s[target, :]
+    # 提取并过滤有效电压数据
+    V_target = Vfenbu_s[target, :][Vfenbu_s[target, :] > 0]
     
-    # 过滤掉为0的值（失败的迭代）
-    V_target = V_target[V_target > 0]
-    
-    # 如果数据不足，返回
+    # 数据有效性检查
     if len(V_target) < 10:
         print("有效数据太少，无法生成有意义的统计分析")
         return None
     
-    # 计算电压统计特征
-    V_mean = np.mean(V_target)           # 电压均值
-    V_std = np.std(V_target)             # 电压标准差
-    V_min = np.min(V_target)             # 最小电压
-    V_max = np.max(V_target)             # 最大电压
+    # 计算统计特征
+    V_mean, V_std = np.mean(V_target), np.std(V_target)
+    V_min, V_max = np.min(V_target), np.max(V_target)
+    prob_above_threshold = np.mean(V_target > threshold)
     
-    print(f"节点{target_node}相位{target_Phase}电压统计特征:")
-    print(f"均值: {V_mean:.4f} pu")
-    print(f"标准差: {V_std:.4f} pu")
-    print(f"最小值: {V_min:.4f} pu")
-    print(f"最大值: {V_max:.4f} pu")
+    # 打印统计结果
+    print(f"\n节点{target_node}相位{target_Phase}电压统计特征:")
+    print(f"均值: {V_mean:.4f} pu | 标准差: {V_std:.4f} pu")
+    print(f"最小值: {V_min:.4f} pu | 最大值: {V_max:.4f} pu")
+    print(f"电压高于{threshold} pu的概率: {prob_above_threshold*100:.2f}%")
     
-    # 计算概率密度分布
-    counts, edges = np.histogram(V_target, bins=nbins, density=True)
-    bin_centers = (edges[:-1] + edges[1:]) / 2  # 计算区间中心值
+    # 准备绘图
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.set_title(f'节点{target_node}相位{target_Phase}电压概率密度分布')
     
-    # 核密度估计（平滑处理）
+    # 计算KDE与直方图
     kde = stats.gaussian_kde(V_target)
     xi = np.linspace(V_min-0.01, V_max+0.01, 500)
     pdf_kde = kde(xi)
     
-    # 绘制概率密度曲线
-    plt.figure(figsize=(10, 6))
-    plt.title(f'节点{target_node}相位{target_Phase}电压概率密度分布')
+    # 绘制直方图和核密度曲线
+    ax.hist(V_target, bins=100, density=True, alpha=0.5, color=[0.7, 0.7, 0.9], edgecolor='none')
+    ax.plot(xi, pdf_kde, 'b-', linewidth=2, label='核密度估计')
     
-    # 绘制直方图
-    plt.bar(bin_centers, counts, width=np.mean(np.diff(bin_centers)), alpha=0.5, 
-            color=[0.7, 0.7, 0.9], edgecolor='none')
+    # 添加统计参考线
+    ax.axvline(V_mean, color='r', linestyle='--', linewidth=1.5, label=f'均值={V_mean:.4f}')
+    ax.axvline(V_mean-V_std, color='m', linestyle='--')
+    ax.axvline(V_mean+V_std, color='m', linestyle='--', label='±1标准差范围')
+    ax.axvline(threshold, color='g', linestyle='-', linewidth=1.5,
+               label=f'阈值{threshold} pu (概率: {prob_above_threshold*100:.2f}%)')
     
-    # 绘制核密度曲线
-    plt.plot(xi, pdf_kde, 'b-', linewidth=2, label='核密度估计')
+    # 标注超阈值区域
+    high_voltage_xi = xi[xi > threshold]
+    if len(high_voltage_xi) > 0:
+        ax.fill_between(high_voltage_xi, kde(high_voltage_xi), alpha=0.3, 
+                        color='green', label=f'高于{threshold} pu区域')
     
-    # 标注统计特征
-    plt.axvline(V_mean, color='r', linestyle='--', linewidth=1.5, 
-                label=f'均值={V_mean:.4f}')
-    plt.axvline(V_mean-V_std, color='m', linestyle='--')
-    plt.axvline(V_mean+V_std, color='m', linestyle='--', 
-                label='±1标准差范围')
+    # 完善图表设置
+    ax.set(xlabel='电压幅值 (pu)', ylabel='概率密度',
+           xlim=[V_min-0.01, V_max+0.01])
+    ax.legend(loc='upper left')
+    ax.grid(True)
+    plt.tight_layout()
     
-    # 图形修饰
-    plt.xlabel('电压幅值 (pu)')
-    plt.ylabel('概率密度')
-    plt.legend(loc='upper left')
-    plt.grid(True)
-    plt.xlim([V_min-0.01, V_max+0.01])
+    # 显示图表
+    try:
+        plt.show()
+    except Exception as e:
+        print(f"注意: 无法显示图表: {e}")
+        plt.close()
+    
+    return pdf_kde, xi, V_mean, V_std, prob_above_threshold
+
+def analyze_all_nodes_voltage_probability(Vfenbu_s, threshold=1.05):
+    """
+    分析所有节点电压高于指定阈值的概率
+    
+    参数:
+        Vfenbu_s: 存储所有节点电压分布的数组
+        threshold: 电压阈值，默认为1.05 pu
+        
+    返回:
+        node_probs: 每个节点电压高于阈值的概率数组
+        system_prob: 系统中任意节点电压高于阈值的概率
+    """
+    n_nodes, n_samples = Vfenbu_s.shape
+    
+    # 初始化概率数组
+    node_probs = np.zeros(n_nodes)
+    
+    # 计算每个节点的概率
+    for i in range(n_nodes):
+        # 提取节点电压数据
+        V_node = Vfenbu_s[i, :]
+        
+        # 过滤掉为0的值（失败的迭代）
+        V_node = V_node[V_node > 0]
+        
+        if len(V_node) > 0:
+            # 计算高于阈值的概率
+            node_probs[i] = np.mean(V_node > threshold)
+    
+    # 输出每个节点的概率
+    print(f"\n所有节点电压高于{threshold} pu的概率统计:")
+    print("---------------------------------------")
+    
+    # 获取物理节点数 (总节点数除以4，因为每个物理节点有4个相位)
+    physical_nodes = n_nodes // 4
+    phases = ['A相', 'B相', 'C相', '中性线']
+    
+    # 按物理节点和相位输出概率
+    for node in range(1, physical_nodes + 1):
+        for phase in range(4):
+            idx = 4 * (node - 1) + phase
+            if idx < n_nodes:
+                prob = node_probs[idx] * 100
+                if prob > 0:  # 只显示概率大于0的节点
+                    print(f"节点{node} {phases[phase]}: {prob:.2f}%")
+    
+    # 计算系统中任意节点电压高于阈值的概率
+    # 对于每次采样，检查是否有任何节点电压高于阈值
+    any_high_voltage = np.zeros(n_samples, dtype=bool)
+    for j in range(n_samples):
+        sample_voltages = Vfenbu_s[:, j]
+        if np.any(sample_voltages > threshold):
+            any_high_voltage[j] = True
+    
+    system_prob = np.mean(any_high_voltage)
+    print("\n系统统计:")
+    print(f"系统中任意节点电压高于{threshold} pu的概率: {system_prob*100:.2f}%")
+    
+    # 找出超标概率最高的前5个节点
+    if np.any(node_probs > 0):
+        top_indices = np.argsort(node_probs)[-5:][::-1]
+        print("\n超标概率最高的前5个节点:")
+        for idx in top_indices:
+            if node_probs[idx] > 0:
+                node = idx // 4 + 1
+                phase = idx % 4
+                print(f"节点{node} {phases[phase]}: {node_probs[idx]*100:.2f}%")
+    
+    return node_probs, system_prob
+
+def visualize_voltage_probabilities(node_probs, threshold=1.05):
+    """
+    可视化所有节点电压高于阈值的概率
+    
+    参数:
+        node_probs: 存储所有节点超过阈值概率的数组
+        threshold: 电压阈值，默认为1.05 pu
+    """
+    # 获取物理节点数和相位数
+    n_nodes = len(node_probs)
+    physical_nodes = n_nodes // 4
+    phases = ['A相', 'B相', 'C相', '中性线']
+    
+    # 将概率重新组织为矩阵形式（节点 x 相位）
+    prob_matrix = np.zeros((physical_nodes, 4))
+    for i in range(n_nodes):
+        node = i // 4
+        phase = i % 4
+        if node < physical_nodes:
+            prob_matrix[node, phase] = node_probs[i] * 100  # 转换为百分比
+    
+    # 创建一个形状更合适的图
+    fig_width = max(10, physical_nodes * 0.5)
+    plt.figure(figsize=(fig_width, 8))
+    
+    # 创建热力图
+    plt.subplot(2, 1, 1)
+    plt.title(f'节点电压高于{threshold} pu的概率热力图')
+    im = plt.imshow(prob_matrix.T, cmap='hot_r', aspect='auto')
+    plt.colorbar(im, label='概率 (%)')
+    
+    # 设置坐标轴标签
+    plt.xlabel('节点编号')
+    plt.ylabel('相位')
+    plt.yticks(range(4), phases)
+    plt.xticks(range(physical_nodes), range(1, physical_nodes + 1))
+    
+    # 在每个单元格中显示概率值
+    for i in range(physical_nodes):
+        for j in range(4):
+            if prob_matrix[i, j] > 0:  # 只标注概率大于0的单元格
+                plt.text(i, j, f'{prob_matrix[i, j]:.1f}%', 
+                         ha='center', va='center', 
+                         color='white' if prob_matrix[i, j] > 50 else 'black')
+    
+    # 创建每个节点的最大概率柱状图
+    plt.subplot(2, 1, 2)
+    plt.title(f'各节点电压高于{threshold} pu的最大概率')
+    
+    # 计算每个节点的最大概率
+    max_probs = np.max(prob_matrix, axis=1)
+    
+    # 绘制柱状图
+    bars = plt.bar(range(1, physical_nodes + 1), max_probs)
+    
+    # 设置柱状图颜色
+    for i, bar in enumerate(bars):
+        if max_probs[i] > 50:
+            bar.set_color('red')
+        elif max_probs[i] > 20:
+            bar.set_color('orange')
+        elif max_probs[i] > 0:
+            bar.set_color('yellow')
+    
+    # 设置坐标轴
+    plt.xlabel('节点编号')
+    plt.ylabel('最大概率 (%)')
+    plt.xticks(range(1, physical_nodes + 1))
+    plt.ylim(0, 100)
+    plt.grid(True, linestyle='--', alpha=0.7)
+    
+    # 在柱子上方标注最大概率值
+    for i, v in enumerate(max_probs):
+        if v > 0:
+            plt.text(i + 1, v + 1, f'{v:.1f}%', ha='center')
+    
     plt.tight_layout()
     
     # 尝试显示图表
@@ -91,11 +241,18 @@ def analyze_monte_carlo_results(Vfenbu_s, n_nodes=None):
     except Exception as e:
         print(f"注意: 无法显示图表: {e}")
         plt.close()
-    
-    return pdf_kde, xi, V_mean, V_std
 
 # 蒙特卡洛法概率潮流计算主程序
-def main_MC():
+def main_MC(threshold=1.05, target_node=10, target_phase=2, visualize=True):
+    """
+    蒙特卡洛法概率潮流计算主程序
+    
+    参数:
+        threshold: 电压阈值，默认为1.05 pu
+        target_node: 选择分析的节点，默认为10
+        target_phase: 选择分析的相位，默认为2
+        visualize: 是否执行可视化，默认为True
+    """
     # 设置字体以支持中文显示
     try:
         # 使用中文字体
@@ -127,26 +284,25 @@ def main_MC():
         traceback.print_exc()
         return None
     
-    # 读取负荷正态分布数据
+    # 读取负荷正态分布数据（从文件中加载节点负荷的概率分布参数）
     with open('25nodesload_30%.txt', 'r') as f:
-        pdfload = np.loadtxt(f)
+        pdfload = np.loadtxt(f) 
 
-    n_nodes = int(4*Nodes)
-    PlPx = np.zeros((n_nodes, 2))
-    PlQx = np.zeros((n_nodes, 2))
+    n_nodes = int(4*Nodes)  # 计算系统中的总节点数（每个物理节点有4个电气节点，对应3相+中性线）
+    PlPx = np.zeros((n_nodes, 2))  # 创建存储有功功率均值和标准差的空数组
+    PlQx = np.zeros((n_nodes, 2))  # 创建存储无功功率均值和标准差的空数组
 
-    for i in range(pdfload.shape[0]):
-        node_i = int(pdfload[i, 0])
-        node_x = int(pdfload[i, 1])
-    # 确保索引有效
-        if 1 <= node_i <= Nodes and 1 <= node_x <= 4:
-            node_idx = int(4*(node_i-1)+node_x) - 1  # Python索引从0开始
-            if 0 <= node_idx < n_nodes:
-                PlPx[node_idx, 0] = -pdfload[i, 2]/SB
-                PlPx[node_idx, 1] = pdfload[i, 3]
-                PlQx[node_idx, 0] = -pdfload[i, 4]/SB
-                PlQx[node_idx, 1] = pdfload[i, 5]
-    print(f"PlPx: {PlPx}")
+    for i in range(pdfload.shape[0]):  # 遍历负荷数据的每一行
+        node_i = int(pdfload[i, 0])  # 获取物理节点编号
+        node_x = int(pdfload[i, 1])  # 获取相位编号（1-4表示A,B,C相和中性线）
+        node_idx = int(4*(node_i-1)+node_x) - 1  # 计算在数组中的实际索引位置（Python索引从0开始）
+
+        PlPx[node_idx, 0] = -pdfload[i, 2]/SB  # 存储有功功率均值（负号表示负荷，并归一化到系统基准功率）
+        PlPx[node_idx, 1] = pdfload[i, 3]  # 存储有功功率标准差
+        PlQx[node_idx, 0] = -pdfload[i, 4]/SB  # 存储无功功率均值（负号表示负荷，并归一化到系统基准功率）
+        PlQx[node_idx, 1] = pdfload[i, 5]  # 存储无功功率标准差
+    #print(f"PlPx: {PlPx}")  # 打印有功功率分布数据，用于调试
+    
     # 蒙特卡洛迭代次数
     daishu = 500
     Vfenbu_s = np.zeros((n_nodes, daishu))
@@ -180,8 +336,8 @@ def main_MC():
     success_count = 0
     
     # 增加调试参数
-    debug_interval = 50  # 每多少次迭代输出详细信息
-    max_trials = 3  # 每次迭代最多尝试次数
+    debug_interval = 100  # 每多少次迭代输出详细信息
+    max_trials = 1  # 每次迭代最多尝试次数
     
     # 蒙特卡洛法主循环
     for iii in range(daishu):
@@ -206,16 +362,18 @@ def main_MC():
                             
                             # 确保索引有效
                             if 0 <= node_idx < PlPx.shape[0]:
-                                # 生成随机负荷，并添加约束条件
+                                # 生成随机负荷
                                 mean_P = PlPx[node_idx, 0]
                                 std_P = PlPx[node_idx, 1]
                                 mean_Q = PlQx[node_idx, 0]
                                 std_Q = PlQx[node_idx, 1]
-                                
-                                # 限制随机值在均值±3倍标准差的范围内
-                                random_P = np.random.normal(mean_P, std_P)
-                                random_Q = np.random.normal(mean_Q, std_Q)
-                                
+                                if mean_P >= 0:
+                                    random_P = np.random.normal(mean_P, std_P)
+                                    random_Q = np.random.normal(mean_Q, std_Q)
+                                else:
+                                    random_P = np.random.beta(2, 5)*mean_P*30
+                                    #print(f"random_P: {random_P}")
+                                    random_Q = 0
                                 # 更新数组
                                 PD_array[node_idx, 0] = random_P
                                 QD_array[node_idx, 0] = random_Q
@@ -279,13 +437,57 @@ def main_MC():
         return None
     
     # 调用分析函数处理结果
-    pdf_kde, xi, V_mean, V_std = analyze_monte_carlo_results(Vfenbu_s, n_nodes)
+    pdf_kde, xi, V_mean, V_std, prob_above_threshold = analyze_monte_carlo_results(
+        Vfenbu_s, target_node=target_node, target_Phase=target_phase, threshold=threshold, n_nodes=n_nodes)
     
     # 蒙特卡洛法计算计时结束
     elapsed_time = time.time() - start_time
     print(f"计算耗时: {elapsed_time:.2f} 秒")
     
-    return Vfenbu_s, pdf_kde, xi, V_mean, V_std
+    return Vfenbu_s, pdf_kde, xi, V_mean, V_std, prob_above_threshold
+
+def parse_arguments():
+    """
+    解析命令行参数
+    """
+    parser = argparse.ArgumentParser(description='蒙特卡洛法概率潮流计算与电压超标分析')
+    
+    parser.add_argument('--threshold', type=float, default=1.05,
+                        help='电压阈值，默认为1.05 pu')
+    parser.add_argument('--node', type=int, default=10,
+                        help='选择分析的节点，默认为10')
+    parser.add_argument('--phase', type=int, default=2,
+                        help='选择分析的相位(1-4，分别对应A,B,C相和中性线)，默认为2')
+    parser.add_argument('--no-viz', action='store_true',
+                        help='禁用可视化功能')
+    parser.add_argument('--all-nodes', action='store_true',
+                        help='分析所有节点，而不仅仅是指定节点')
+    
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    main_MC() 
+    # 解析命令行参数
+    args = parse_arguments()
+    
+    print(f"使用电压阈值: {args.threshold} pu")
+    print(f"分析节点: {args.node}, 相位: {args.phase}")
+    print(f"是否可视化: {not args.no_viz}")
+    
+    results = main_MC(threshold=args.threshold, 
+                     target_node=args.node, 
+                     target_phase=args.phase, 
+                     visualize=not args.no_viz)
+                     
+    if results:
+        Vfenbu_s, pdf_kde, xi, V_mean, V_std, prob_above_threshold = results
+        print(f"\n=========================================")
+        print(f"选定节点电压高于{args.threshold} pu的概率: {prob_above_threshold*100:.2f}%")
+        print(f"=========================================")
+        
+        # 分析所有节点电压概率
+        if args.all_nodes:
+            node_probs, system_prob = analyze_all_nodes_voltage_probability(Vfenbu_s, threshold=args.threshold)
+            
+            # 可视化所有节点的电压超标概率
+            if not args.no_viz:
+                visualize_voltage_probabilities(node_probs, threshold=args.threshold) 
